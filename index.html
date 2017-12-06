@@ -1,0 +1,1147 @@
+<html>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<meta name="apple-mobile-web-app-capable"
+      content="yes">
+<head>
+<title>Geocapture</title>
+<style>
+body {
+margin-bottom:80px;
+background:#EEE;
+}
+#storageDisplay {
+	/*position:fixed;*/
+	bottom:0px;
+	left:0px;
+	padding:10px;
+	max-height:300px;
+	margin: 0px;
+	padding-bottom:25px;
+	overflow:scroll;
+	border: 1px solid black;
+	background:#EEE;
+}
+#textTA {
+width:80%;
+height:70px;
+}
+#indicator {
+width:100%;
+height:28px;
+background:white;
+position:fixed;
+bottom:0px;
+left:0px;
+padding:0px;
+margin:0px;
+text-align:center;
+font-variant:small-caps;
+}
+#indicator div {
+display:inline-block;
+width:22%;
+height:100%;
+margin:auto 0px;
+padding:0px;
+padding-top:4px;
+font-variant:small-caps;
+}
+.on {
+
+}
+#captureIndicator {
+border-top:3px solid red;
+}
+#captureIndicator.on {
+border-top:3px solid black;
+background:pink;
+}
+#watchIndicator {
+border-top:3px solid green;
+}
+#watchIndicator.on {
+border-top:3px solid black;
+background:lightgreen;
+}
+#referenceIndicator {
+border-top:3px solid purple;
+}
+#referenceIndicator.on {
+border-top:3px solid black;
+background:lavender;
+}
+#noteIndicator {
+border-top:3px solid blue;
+}
+#noteIndicator.on {
+border-top:3px solid black;
+background:lightblue;
+}
+</style>
+<script>
+function Event(sender) {
+    this._sender = sender;
+    this._listeners = [];
+}
+
+Event.prototype = {
+    attach : function (listener) {
+        this._listeners.push(listener);
+    },
+    notify : function (args) {
+        var index;
+
+        for (index = 0; index < this._listeners.length; index += 1) {
+            this._listeners[index](this._sender, args);
+        }
+    }
+};
+
+//{e:"CAPSTART",etm:21321321321}
+//{e:"CAPEND",etm:432143214321}
+
+function SelectArrayBinder(select, array, nameGenerator) {
+	var lookupArray = [];
+	while( select.options.length > 0 ) select.options.remove(select.options[0]);
+	array.forEach( function(x,i) {
+		var opt = document.createElement('option');
+		opt.text = nameGenerator(x);
+		opt.value = btoa(i);
+		lookupArray.push({key:btoa(i), value:x});
+		select.options.add(opt);
+	});
+	
+	return new ( function SelectArrayBinding(select,lookupArray,nameGenerator) {
+		this.currentValue = function() { return lookupArray.filter( function(x) { return x.key == select.options[select.selectedIndex].value })[0].value };
+	})(select,lookupArray,nameGenerator)
+}
+
+function distance(lon1, lat1, lon2, lat2) {
+  var R = 6371; // Radius of the earth in km
+  var dLat = (lat2-lat1).toRad();  // Javascript functions in radians
+  var dLon = (lon2-lon1).toRad(); 
+  var a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+          Math.cos(lat1.toRad()) * Math.cos(lat2.toRad()) * 
+          Math.sin(dLon/2) * Math.sin(dLon/2); 
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
+  var d = R * c; // Distance in km
+  return d;
+}
+
+/** Converts numeric degrees to radians */
+if (typeof(Number.prototype.toRad) === "undefined") {
+  Number.prototype.toRad = function() {
+    return this * Math.PI / 180;
+  }
+}
+
+function GeocaptureModel() {
+
+	this.currentGeolocation = {
+		latitude: undefined,
+	    longitude: undefined,
+	    captureTime: undefined
+	}
+	
+	this.storeHistory = false;
+	this.showStorage = false;
+	this.captureChanges = true;
+	this.eventHistory = JSON.parse(localStorage.getItem("GLCAP_HISTORY"));
+	if ( this.eventHistory == null ) {
+		this.eventHistory = [];
+	}
+	this.referencePoints = [];
+	this.selectedRefPt = undefined;
+	this.setRefPoint = undefined;
+	this.workingNote = "";
+	this.note = "";
+	
+	this.geolocationChanged = new Event(this);
+	this.captureStateChanged = new Event(this);
+	this.watchStateChanged = new Event(this);
+	this.eventHistoryChanged = new Event(this);
+	this.refPointChanged = new Event(this);
+	this.refPointListChanged = new Event(this);
+	this.noteChanged = new Event(this);
+	this.storageVisibilityChanged = new Event(this);
+	this.selectedRefPointChanged = new Event(this);
+	this.started = new Event(this);
+	this.workingNoteChanged = new Event(this);
+	
+	//this.closeState
+}
+
+GeocaptureModel.prototype = {
+	
+	getCaptureState: function() { return this.storeHistory; },
+	getWatchState: function() { return this.captureChanges; },
+	getStorage: function() { return this.eventHistory; },
+	getStorageItemCount: function() { return this.eventHistory.length; },
+	getReferencePoint: function() { return this.setRefPoint; },
+	getSelectedRefPoint: function() { return this.selectedRefPt; },
+	getReferencePoints: function() { return this.referencePoints; },
+	getNote: function() { return this.note; },
+	getGeolocation: function() { return this.currentGeolocation; },
+	isStorageVisible: function() { return this.showStorage; },
+	getWorkingNote: function() { return this.workingNote },
+
+	toggleCaptureState: function() {
+		var eventDtTm = new Date().valueOf();
+		if ( !this.storeHistory ) {
+			this.storeHistory = !this.storeHistory;
+			this.addEvent({e:"SETCAPTURE",etm:eventDtTm});
+			if( this.captureChanges ) {
+				this.addEvent({e:"SETWATCH",etm:eventDtTm});
+			}
+			if( this.setRefPoint !== undefined ) {
+				this.addEvent({e:"SETREF",etm:eventDtTm,refpt:this.setRefPoint.name});
+			}
+			if( this.note != "" ) {
+				this.addEvent({e:"SETNOTE",etm:eventDtTm,note:this.note});
+			}
+		} else {
+			if( this.captureChanges ) {
+				this.addEvent({e:"CLEARWATCH",etm:eventDtTm});
+			}
+			if( this.setRefPoint !== undefined ) {
+				this.addEvent({e:"CLEARREF",etm:eventDtTm,refpt:this.setRefPoint.name});
+			}
+			if( this.note != "" ) {
+				this.addEvent({e:"CLEARNOTE",etm:eventDtTm,note:this.note});
+			}
+			this.addEvent({e:"CLEARCAPTURE",etm:eventDtTm});
+			this.storeHistory = !this.storeHistory;
+		}
+		this.captureStateChanged.notify();
+		
+	},
+	
+	toggleWatchState: function() {
+		var eventDtTm = new Date().valueOf();
+		if ( !this.captureChanges ) {
+			this.captureChanges = !this.captureChanges;
+			this.addEvent({e:"SETWATCH",etm:eventDtTm});
+		} else {
+			this.captureChanges = !this.captureChanges;
+			this.addEvent({e:"CLEARWATCH",etm:eventDtTm});
+		}
+		this.watchStateChanged.notify();
+	},
+	
+	setReferencePoint: function() {
+		var eventDtTm = new Date().valueOf();
+		this.setRefPoint = this.selectedRefPt;
+		this.addEvent({e:"SETREF",etm:eventDtTm,refpt:this.setRefPoint.name});
+		this.refPointChanged.notify();
+	},
+	
+	setReferencePoints: function(list) {
+		this.referencePoints = list;
+		this.setSelectedRefPt(0);
+		this.refPointListChanged.notify();
+	},
+	
+	clearReferencePoint: function() {
+		var eventDtTm = new Date().valueOf();
+		this.setRefPoint = undefined;
+		this.addEvent({e:"CLEARREF",etm:eventDtTm});
+		this.refPointChanged.notify();
+	},
+	
+	addEvent: function(event) {
+		if ( this.storeHistory ) {
+			this.eventHistory.push(event);
+			localStorage.setItem("GLCAP_HISTORY",JSON.stringify(this.eventHistory));
+			this.eventHistoryChanged.notify();
+		}
+	},
+	
+	toggleStorageVisibility: function() {
+		this.showStorage = !this.showStorage;
+		this.storageVisibilityChanged.notify();
+	},
+	
+	setSelectedRefPt: function(id) {
+		this.selectedRefPt = this.referencePoints.filter(function(x) { return x.id == id })[0];
+		this.selectedRefPointChanged.notify();
+	},
+	
+	setWorkingNote: function(note) {
+		this.workingNote = note;
+		this.workingNoteChanged.notify();
+	},
+	
+	clearEvents: function() {
+		var eventDtTm = new Date().valueOf();
+		this.eventHistory = [];
+		localStorage.clear("GLCAP_HISTORY");
+		if ( this.storeHistory ) {
+			this.addEvent({e:"SETCAPTURE",etm:eventDtTm});
+			if( this.captureChanges ) {
+				this.addEvent({e:"SETWATCH",etm:eventDtTm});
+			}
+			if( this.setRefPoint !== undefined ) {
+				this.addEvent({e:"SETREF",etm:eventDtTm,refpt:this.setRefPoint.name});
+			}
+			if( this.note != "" ) {
+				this.addEvent({e:"SETNOTE",etm:eventDtTm,note:this.note});
+			}
+		}
+		this.eventHistoryChanged.notify();
+	},
+	
+	setGeolocation: function(latitude,longitude, captureDtTm) {
+		var eventDtTm = new Date().valueOf();
+		if ( this.currentGeolocation.latitude != latitude || this.currentGeolocation.longitude != longitude ) {
+			this.currentGeolocation = {
+				latitude: latitude,
+				longitude: longitude,
+				captureTime: captureDtTm
+			}
+			this.geolocationChanged.notify();
+			this.addEvent({e:"LOCATION",etm:eventDtTm,lat:latitude,lng:longitude,captm:captureDtTm});
+		}
+	},
+	
+	setNote: function() {
+		var eventDtTm = new Date().valueOf();
+		this.note = this.workingNote;
+		if (this.note == "") {
+			this.addEvent({e:"CLEARNOTE",etm:eventDtTm});
+		} else {
+			this.addEvent({e:"SETNOTE",etm:eventDtTm,note:this.note});
+		}
+		this.noteChanged.notify();
+	},
+	
+	clearNote: function() {
+		this.setWorkingNote("");
+		this.setNote();
+	},
+	
+	start: function() {
+		this.started.notify();
+	}
+	
+	
+}
+
+function GeocaptureView(model) {
+	this._model = model;
+	this.listeners = [];
+	this.refListBinder;
+	
+	this._elements = {
+
+
+		storageTxt: {
+			em: document.createElement('pre'),
+			update: ( function(em) {
+				if ( this.showStorage ) {
+					var a = [];
+					this._model.getStorage().forEach( function(x) {
+						var s = new Date(x.etm).toISOString() + ": "
+						switch( x.e ) {
+							case "SETCAPTURE":
+								s += "Start of event capture"
+								break;
+							case "SETREF":
+								s += "Set reference point"
+								break;
+							case "SETNOTE":
+								s += "Added note"
+								break;
+							case "SETWATCH":
+								s += "Auto-capture geolocation enabled"
+								break;
+							case "LOCATION":
+								s += "Measurement {lat:" + x.lat + ",lng:" + x.lng + ",captureTime:" + x.captm + "}";
+								break;
+							case "CLEARCAPTURE":
+								s += "Stop of event capture"
+								break;
+							case "CLEARREF":
+								s += "Clear reference point"
+								break;
+							case "CLEARNOTE":
+								s += "Removed note"
+								break;
+							case "CLEARWATCH":
+								s += "Auto-capture geolocation disabled"
+								break;
+						}
+						a.push(s);
+					})
+					em.innerHTML = a.join('\n');
+				} else {
+					em.innerHTML = this._model.getStorageItemCount() + " events captured."
+				}
+			})
+		}
+	}
+
+	
+
+	
+	// VIEW EVENTS GO HERE
+	this.showHistoryChanged = new Event(this);;
+	
+	// THIS HANDLES CHANGES TO MODEL
+
+
+	this.showStorage = false;
+	
+}
+
+GeocaptureView.prototype = {
+
+	addElement : function(em,viewEventHandlers,controllerBindings) {
+		var m = this._model;
+		var v = this;
+		viewEventHandlers.forEach(function(x) {
+			x.events.forEach(function(event) {
+				m[event].attach(x.handler.bind(em))
+			});
+		});
+	    controllerBindings.forEach(function(x) { v.listeners.push( {element:em, event:x.event, binding:x.binding.bind(v)} ) });
+	},
+
+	initialize : function(ems) {
+		
+
+
+	},
+	
+	getSelectedRefPoint : function() {
+		if( this.refListBinder !== undefined ) {
+			return this.refListBinder.currentValue();
+		}
+	},
+	
+	getTypedNote : function () { return this._elements.textTA.value; },
+	
+	updateAll : function() {
+		this._elements.forEach( function(x) { x.update(x.em) } );
+	},
+	
+	
+	registerListener : function(controller) {
+		this.listeners.forEach( function(x) {
+			x.element.addEventListener(x.event,x.binding(controller).bind(x.element));
+		})
+	}
+
+}
+
+function GeocaptureController(model,view) {
+	this._model = model;
+	this._view = view;
+	
+	
+	this.watchPositionID;
+
+	if( this._model.getWatchState ) {
+	this.watchPositionID = navigator.geolocation.watchPosition(this.recordGeolocationMeasurement.bind(this), function() {}, { enableHighAccuracy:true } );
+	}
+	
+	view.registerListener(this);
+}
+
+GeocaptureController.prototype = {
+	recordGeolocationMeasurement : function(position) {
+		this._model.setGeolocation(position.coords.latitude,position.coords.longitude,position.timestamp);
+	},
+	
+	takeGeolocationMeasurement : function() {
+		navigator.geolocation.getCurrentPosition(
+			function(model,position) {
+				model.setGeolocation(position.coords.latitude,position.coords.longitude,position.timestamp)
+			}.bind(this,this._model),
+			function(error) {
+				this._model.setGeolocation()
+			},
+			{ enableHighAccuracy:true });
+	},
+	
+	toggleStoreState : function() {
+		this._model.toggleCaptureState();
+	},
+	
+	toggleWatchState : function() {
+		if( this._model.getWatchState() ) {
+			navigator.geolocation.clearWatch(this.watchPositionID);
+		} else {
+			this.watchPositionID = navigator.geolocation.watchPosition(this.recordGeolocationMeasurement.bind(this), function() {}, { maximumAge:60, enableHighAccuracy:true } );
+		}
+		this._model.toggleWatchState();
+	},
+	
+	clearStorage : function() {
+		this._model.clearEvents();
+	},
+	
+	exportStorage : function () {
+		var storage = this._model.getStorage();
+		var referencePoints = this._model.getReferencePoints();
+		var exportArray = ['"Dataset","Watch set","Latitude","Longitude","Event Time","Capture Time","Reference Point","Distance from Reference (km)","Note"'];
+		var lastnote = ''
+		var lastref = ''
+		var lastrefpt = null;
+		var dataset = 0;
+		var watchset = 0;
+		var watching = false;
+		for( var i=0; i<storage.length;i++ ) {
+			switch( storage[i].e ) {
+				case "SETCAPTURE":
+					watching=false;
+					lastnote = ''
+					lastref = ''
+					lastrefpt = null
+					dataset++
+					break;
+				case "SETREF":
+					lastref = storage[i].refpt
+					lastrefpt = referencePoints.filter(function(x) { return x.name == lastref })[0];
+					break;
+				case "SETNOTE":
+					lastnote = storage[i].note
+					break;
+				case "SETWATCH":
+					watchset++
+					watching = true
+					break;
+				case "LOCATION":
+					var x = "" + dataset + "," +
+						(watching ? watchset : '') + "," +
+						storage[i].lat + "," +
+						storage[i].lng + "," +
+						'"' + new Date(storage[i].etm).toISOString() + '",' +
+						'"' + new Date(storage[i].captm).toISOString() + '",' +
+						'"' + lastref + '",' +
+						(lastrefpt === null ? '' : distance(storage[i].lng,storage[i].lat,lastrefpt.lng,lastrefpt.lat)) + "," +
+						'"' + lastnote + '"' ;
+					exportArray.push(x)
+					break;
+				case "CLEARCAPTURE":
+					watching=false;
+					lastnote = ''
+					lastref = ''
+					lastrefpt = null
+					break;
+				case "CLEARREF":
+					lastref = ''
+					lastrefpt = null
+					break;
+				case "CLEARNOTE":
+					lastnote = ''
+					break;
+				case "CLEARWATCH":
+					watching=false;
+					break;
+			}
+		}
+		
+		//var dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(exportArray.join("\n"));
+		var dataStr = URL.createObjectURL(new Blob([exportArray.join("\n")],{type:'text/csv'}))
+		var downloadAnchor = document.createElement('a');
+		downloadAnchor.setAttribute("href",dataStr);
+		downloadAnchor.setAttribute("target","_blank");
+		downloadAnchor.setAttribute("download","download.csv");
+		downloadAnchor.click();
+		downloadAnchor.remove();
+		
+	},
+	
+	setReferencePointList : function(list) {
+		list.forEach( function(x,i) { x.id = i; } )
+		this._model.setReferencePoints(list);
+	},
+	
+	setReferencePoint : function(name, latitude, longitude) {
+		this._model.setReferencePoint();
+	},
+	
+	clearReferencePoint : function(name, latitude, longitude) {
+		this._model.clearReferencePoint();
+	},
+	
+	setNote: function(note) {
+		this._model.setNote();
+	},
+	
+	clearNote: function() {
+		this._model.clearNote();
+	},
+	
+	toggleShowStorage : function() {
+		this._model.toggleStorageVisibility();
+	},
+	
+	redraw: function() {
+		this._model.start();
+	},
+	
+	setSelectedRefPt : function(id) {
+		this._model.setSelectedRefPt(id);
+	},
+	
+	setWorkingNote : function(note) {
+		this._model.setWorkingNote(note);
+	}
+	
+}
+
+function start() {
+	var m = new GeocaptureModel();
+	var v = new GeocaptureView(m);
+	
+	v.addElement(
+		document.getElementById("storeHistoryBn"),
+		[{
+			events:["started","captureStateChanged"],
+			handler: function(model, args) {
+				this.textContent = model.getCaptureState() ? "Stop Recording" : "Start Recording"
+			}
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { controller.toggleStoreState(); } }
+		}]
+	);
+
+	v.addElement(
+		document.getElementById("captureNowBn"),
+		[{
+			events:["started","watchStateChanged"],
+			handler:(function(model,args) {
+				this.textContent = "Get current geolocation";
+				this.disabled = model.getWatchState();
+			})
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { controller.takeGeolocationMeasurement(); }}
+		}]
+	);
+	
+	v.addElement(
+		document.getElementById("captureChangesBn"),
+		[{
+			events:["started","watchStateChanged"],
+			handler:(function(model,args) {
+				this.textContent = model.getWatchState() ? "Stop Watching for Location Changes" : "Watch for Location Changes";
+			})
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { controller.toggleWatchState(); }}
+		}]
+	);
+	
+	v.addElement(
+		document.getElementById("clearStorageBn"),
+		[{
+			events:["started","eventHistoryChanged"],
+			handler:(function(model,args) {
+				this.textContent = "Clear Recorded Events";
+				this.disabled = model.getStorageItemCount() == 0
+			})
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { if(confirm("Clear all previously recorded events?")) controller.clearStorage(); }}
+		}]
+	);
+	
+	v.addElement(
+		document.getElementById("showStorageBn"),
+		[{
+			events:["started","storageVisibilityChanged"],
+			handler:(function(model,args) {
+				this.textContent = model.isStorageVisible() ? "Hide Event Details" : "Show Event Details"
+			})
+		}],
+		[{
+			event:"click",
+			binding:(function(controller) { return function() { controller.toggleShowStorage(); }})
+		}]
+	);
+	
+	v.addElement(
+		document.getElementById("refPointList"),
+		[{
+			events:["started","refPointListChanged"],
+			handler:(function(model,args) {
+				var select = this;
+				while( this.options.length > 0 ) this.options.remove(this.options[0]);
+				model.getReferencePoints().forEach(function(x) {
+					var opt = document.createElement('option');
+					opt.text = x.name;
+					opt.value = x.id;
+					select.options.add(opt);
+				})
+			})
+		}],
+		[{
+			event:"input",
+			binding:(function(controller) { return function() { controller.setSelectedRefPt(this.selectedOptions[0].value ); } })
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("setRefPtBn"),
+		[{
+			events:["started","refPointChanged","selectedRefPointChanged"],
+			handler:function(model,args) {
+				this.disabled = false;
+				if ( model.getReferencePoint() === undefined ) {
+					this.textContent = "Set Reference Point"
+				} else if( model.getReferencePoint() === model.getSelectedRefPoint() ) {
+					this.textContent = "Set Reference Point"
+					this.disabled = true;
+				} else {
+					this.textContent = "Change Reference Point"
+				}
+			}
+		}],
+		[{
+			event:"click",
+			binding:(function(controller) { return function() { controller.setReferencePoint(); } })
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("clearRefPtBn"),
+		[{
+			events:["started","refPointChanged"],
+			handler:function(model,args) {
+				this.textContent = "Clear Reference Point"
+				this.disabled = model.getReferencePoint() === undefined
+			}
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { controller.clearReferencePoint(); }}
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("textTA"),
+		[{
+			events:["workingNoteChanged"],
+			handler:function(model,args) {
+				if( this.value != model.getWorkingNote() ) this.value = model.getWorkingNote();
+			}
+		}],
+		[{
+			event:"input",
+			binding:function(controller) { return function() { controller.setWorkingNote(this.value); }}
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("textSetBn"),
+		[{
+			events:["started","noteChanged","workingNoteChanged"],
+			handler:function(model,args) {
+				if ( model.getWorkingNote() == "" ) {
+					this.textContent = "Set Note"
+					this.disabled = true;
+				} else if ( model.getNote() == "" ) {
+					this.textContent = "Set Note"
+					this.disabled = false;
+				} else if ( model.getNote() == model.getWorkingNote() ) {
+					this.textContent = "Change Note"
+					this.disabled = true;
+				} else {
+					this.textContent = "Change Note"
+					this.disabled = false;
+				}
+			}
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { controller.setNote(); }}
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("textClearBn"),
+		[{
+			events:["started","noteChanged"],
+			handler:function(model,args) {
+				this.textContent = "Clear Note"
+				this.disabled = model.getNote() == ""
+			}
+		}],
+		[{
+			event:"click",
+			binding:function(controller) { return function() { controller.clearNote(); }}
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("latLongTxt"),
+		[{
+			events:["started","geolocationChanged"],
+			handler:function(model,args) {
+				var loc = model.getGeolocation();
+				if ( loc.latitude !== undefined ) {
+					this.innerHTML = "LAT: " + loc.latitude + "\nLONG: " + loc.longitude + "\n"
+					// TODO add reference point distance here
+					var a = document.createElement('a');
+					a.href = "https://www.google.com/maps/?q=" + loc.latitude + "," + loc.longitude
+					a.innerHTML = "Google Maps"
+					a.target = "_blank"
+					this.appendChild(a);
+				} else {
+					this.innerHTML = "NO GEOLOCATION CAPTURED"
+				}
+			}
+		}],
+		[]
+	)
+	
+	v.addElement(
+		document.getElementById("refPtTxt"),
+		[{
+			events:["started","geolocationChanged","refPointChanged"],
+			handler:function(model,args) {
+				var ref = model.getReferencePoint();
+				var current = model.getGeolocation();
+				if ( model.getReferencePoint() !== undefined ) {
+					this.innerHTML = "Ref point " + ref.name + " selected"
+					if ( current.latitude !== undefined ) {
+						var dist = distance( current.longitude, current.latitude, ref.lng, ref.lat )
+						this.innerHTML += "\n" + dist + " km away."
+					} else {
+						this.innerHTML += "."
+					}
+					// TODO: Google Maps?
+				} else {
+					this.innerHTML = "No reference point selected"
+				}
+			}
+		}],
+		[]
+	)
+	
+	v.addElement(
+		document.getElementById("noteTxt"),
+		[{
+			events:["started","noteChanged"],
+			handler: function(model,args) {
+				var note = model.getNote();
+				if( note != "" ) {
+					this.innerHTML = "Note added: " + note;
+				} else {
+					this.innerHTML = "No note added";
+				}
+			}
+		}],
+		[]
+	)
+	
+	v.addElement(
+		document.getElementById("exportStorageBn"),
+		[{
+			events:["started","eventHistoryChanged"],
+			handler: function(model,args) {
+				this.disabled = model.getStorageItemCount() == 0
+				this.innerText = "Export Events"
+			}
+		}],
+		[{
+			event:"click",
+			binding: function(controller) { return function() { controller.exportStorage(); }}
+		}]
+	)
+	
+	v.addElement(
+		document.getElementById("storageTxt"),
+		[{
+			events:["started","eventHistoryChanged","storageVisibilityChanged"],
+			handler: function(model,args) {
+				if ( model.isStorageVisible() ) {
+					var a = [];
+					var lastref='';
+					var lastnote='';
+					var formatGeo = function(x) { x = x + ""; if ( x[0] != "-" ) x = "+" + x; return x.substr(0,8);}
+					model.getStorage().forEach( function(x) {
+						var s = new Date(x.etm).toISOString().substr(5,14).replace('-','/').replace('T',' ') + ": "
+						switch( x.e ) {
+							case "SETCAPTURE":
+								s += "=== START CAPTURE ==="
+								break;
+							case "SETREF":
+								lastref = x.refpt
+								s += "SET REF : " + x.refpt
+								break;
+							case "SETNOTE":
+								lastnote = x.note
+								s += "SET NOTE: " + x.note
+								break;
+							case "SETWATCH":
+								s += "SET WATCH"
+								break;
+							case "LOCATION":
+								s += "(" + formatGeo(x.lat) + "," + formatGeo(x.lng) + ")";
+								break;
+							case "CLEARCAPTURE":
+								s += "=== STOP CAPTURE ==="
+								break;
+							case "CLEARREF":
+								s += "CLR REF : " + lastref
+								lastref = ''
+								break;
+							case "CLEARNOTE":
+								s += "CLR NOTE: " + lastnote
+								lastnote = ''
+								break;
+							case "CLEARWATCH":
+								s += "CLR WATCH"
+								break;
+						}
+						a.push(s);
+					})
+					this.innerHTML = a.join('\n');
+				} else {
+					this.innerHTML = model.getStorageItemCount() + " events captured."
+				}
+			}
+		}],
+		[]
+	)
+	
+	v.addElement(
+		document.getElementById("captureIndicator"),
+		[{
+			events: ["started","captureStateChanged"],
+			handler: function(model,args) {
+				if ( model.getCaptureState() ) {
+					this.innerHTML = 'Capture';
+					this.classList.add('on');
+				} else {
+					this.innerHTML = 'No Cap';
+					this.classList.remove('on');
+				}
+			}
+		}],
+		[]
+	)
+	v.addElement(
+		document.getElementById("watchIndicator"),
+		[{
+			events: ["started","watchStateChanged"],
+			handler: function(model,args) {
+				if ( model.getWatchState() ) {
+					this.innerHTML = 'Watch';
+					this.classList.add('on');
+				} else {
+					this.innerHTML = 'No Watch';
+					this.classList.remove('on');
+				}
+			}
+		}],
+		[]
+	)
+	v.addElement(
+		document.getElementById("referenceIndicator"),
+		[{
+			events: ["started","refPointChanged"],
+			handler: function(model,args) {
+				if ( model.getReferencePoint() !== undefined ) {
+					this.innerHTML = 'Ref';
+					this.classList.add('on');
+				} else {
+					this.innerHTML = 'No Ref';
+					this.classList.remove('on');
+				}
+			}
+		}],
+		[]
+	)
+	v.addElement(
+		document.getElementById("noteIndicator"),
+		[{
+			events: ["started","noteChanged"],
+			handler: function(model,args) {
+				if ( model.getNote() != "" ) {
+					this.innerHTML = 'Note';
+					this.classList.add('on');
+				} else {
+					this.innerHTML = 'No Note';
+					this.classList.remove('on');
+				}
+			}
+		}],
+		[]
+	)
+	
+	/*
+	v.addElement(
+		document.getElementById("exportTxt"),
+		[{
+			events:["started","]
+		}],
+		[]
+	)
+	*/
+	
+	htmlelements = {
+	exportTxt: "exportTxt",
+	storageTxt: "storageTxt"
+}
+
+	//this.showHistoryChanged.attach( this._elements.storageTxt.update );
+	//this._model.noteChanged.attach( this._elements.noteTxt.update );
+	//this._model.eventHistoryChanged.attach( this._elements.storageTxt.update );
+	
+	/*
+		this._elements.clearStorageBn.em.addEventListener("click",function() {
+			if(confirm("Clear all previously recorded events?")) controller.clearStorage();
+		}.bind(controller));
+		this._elements.setRefPtBn.em.addEventListener("click",(function() {
+			if(this.refListBinder.currentValue !== undefined) {
+				var refPt = this.refListBinder.currentValue();
+				controller.setReferencePoint(refPt.name, refPt.lat, refPt.lng);
+			}
+		}).bind(this));
+		this._elements.clearRefPtBn.em.addEventListener("click",controller.clearReferencePoint.bind(controller)) 
+		this._elements.textSetBn.em.addEventListener("click",(function() {
+			controller.setNote(this._elements.textTA.em.value);
+		}).bind(this)) 
+		this._elements.textClearBn.em.addEventListener("click",controller.clearNote.bind(controller));
+
+	})	*/
+	
+	
+	
+	var c = new GeocaptureController(m,v);
+	
+	//v.initialize(ems);
+	c.redraw();
+	c.setReferencePointList([
+{"name":"H-1-0",lat:33.83251469,lng:-84.66740701},
+{"name":"H-1-500",lat:33.83355097,lng:-84.66848744},
+{"name":"H-2-0",lat:33.83268256,lng:-84.66678198},
+{"name":"H-2-500",lat:33.83372395,lng:-84.66785153},
+{"name":"H-3-500",lat:33.83407055,lng:-84.66737654},
+{"name":"H-3C-0",lat:33.83302975,lng:-84.66630738},
+{"name":"P20-1-10",lat:33.83330715,lng:-84.66383621},
+{"name":"P20-1-100",lat:33.83349635,lng:-84.66402495},
+{"name":"P20-1-150",lat:33.83360052,lng:-84.66413244},
+{"name":"P20-1-20",lat:33.83332824,lng:-84.66385724},
+{"name":"P20-1-200",lat:33.83370417,lng:-84.66423982},
+{"name":"P20-1-30",lat:33.83334965,lng:-84.66387739},
+{"name":"P20-1-40",lat:33.83337046,lng:-84.66389812},
+{"name":"P20-1-50",lat:33.8333914,lng:-84.66391954},
+{"name":"P20-2-0",lat:33.83333087,lng:-84.66375411},
+{"name":"P20-2-10",lat:33.83335205,lng:-84.66377589},
+{"name":"P20-2-100",lat:33.8335377,lng:-84.66397085},
+{"name":"P20-2-150",lat:33.83364217,lng:-84.66407713},
+{"name":"P20-2-20",lat:33.83337252,lng:-84.66379643},
+{"name":"P20-2-200",lat:33.8337457,lng:-84.66418484},
+{"name":"P20-2-30",lat:33.83339288,lng:-84.66381929},
+{"name":"P20-2-40",lat:33.83341359,lng:-84.66384033},
+{"name":"P20-2-50",lat:33.83343396,lng:-84.66386253},
+{"name":"P53-1-0",lat:33.82346522,lng:-84.6582781},
+{"name":"P53-1-10",lat:33.82348527,lng:-84.65829929},
+{"name":"P53-1-100",lat:33.82367607,lng:-84.65848788},
+{"name":"P53-1-150",lat:33.8237802,lng:-84.65859564},
+{"name":"P53-1-20",lat:33.82350702,lng:-84.65831977},
+{"name":"P53-1-200",lat:33.82388518,lng:-84.65870114},
+{"name":"P53-1-30",lat:33.82352839,lng:-84.6583407},
+{"name":"P53-1-40",lat:33.82354953,lng:-84.65836199},
+{"name":"P53-1-50",lat:33.82357011,lng:-84.65838344},
+{"name":"P53-2-0",lat:33.82581065,lng:-84.66067836},
+{"name":"P53-2-10",lat:33.82583131,lng:-84.66070049},
+{"name":"P53-2-100",lat:33.82602146,lng:-84.6608894},
+{"name":"P53-2-150",lat:33.82612663,lng:-84.66099505},
+{"name":"P53-2-20",lat:33.82585179,lng:-84.6607214},
+{"name":"P53-2-200",lat:33.82623216,lng:-84.66109984},
+{"name":"P53-2-30",lat:33.82587287,lng:-84.66074285},
+{"name":"P53-2-40",lat:33.82589364,lng:-84.66076399},
+{"name":"P53-2-50",lat:33.82591492,lng:-84.66078553},
+{"name":"P53-3-0",lat:33.83043827,lng:-84.66539953},
+{"name":"P53-3-10",lat:33.83045968,lng:-84.66542068},
+{"name":"P53-3-100",lat:33.83065004,lng:-84.66561057},
+{"name":"P53-3-150",lat:33.83075404,lng:-84.6657187},
+{"name":"P53-3-20",lat:33.83048056,lng:-84.66544216},
+{"name":"P53-3-200",lat:33.8308578,lng:-84.66582496},
+{"name":"P53-3-30",lat:33.83050116,lng:-84.66546454},
+{"name":"P53-3-40",lat:33.83052138,lng:-84.66548573},
+{"name":"P53-3-50",lat:33.83054302,lng:-84.66550711},
+{"name":"TK 1 -140",lat:33.8332861,lng:-84.66798838},
+{"name":"TK 1 196",lat:33.83316534,lng:-84.66787488},
+{"name":"TK 1 252",lat:33.83305242,lng:-84.66774882},
+{"name":"TK-1-0",lat:33.83358464,lng:-84.66828109},
+{"name":"TK1-25",lat:33.83352803,lng:-84.66823367},
+{"name":"TK1-50",lat:33.83347383,lng:-84.66818182},
+{"name":"TK-1-95",lat:33.83338181,lng:-84.66808487},
+{"name":"TK1C -20-2",lat:33.83347165,lng:-84.6682565},
+{"name":"TK1C 40-1",lat:33.83339276,lng:-84.66818592},
+{"name":"TK-1C 40-2",lat:33.83329534,lng:-84.66808836},
+{"name":"TK-1C 53-1",lat:33.83319063,lng:-84.66797981},
+{"name":"TK-1C-20-1",lat:33.83352489,lng:-84.66830807},
+{"name":"TK-2-0",lat:33.83268162,lng:-84.66696317},
+{"name":"TK-2-140",lat:33.83297652,lng:-84.66725932},
+{"name":"TK-2-196",lat:33.83309435,lng:-84.66737709},
+{"name":"TK-2-25",lat:33.83273254,lng:-84.66701848},
+{"name":"TK-2-252",lat:33.83321187,lng:-84.66749606},
+{"name":"TK-2-50",lat:33.83278566,lng:-84.66707082},
+{"name":"TK-2-95",lat:33.83288132,lng:-84.66716379},
+{"name":"TK-2C-20-1",lat:33.83274287,lng:-84.66694227},
+{"name":"TK-2C-20-2",lat:33.83279634,lng:-84.66699428},
+{"name":"TK-2C-40-1",lat:33.83286994,lng:-84.66706648},
+{"name":"TK-2C-40-2",lat:33.83296449,lng:-84.66716355},
+{"name":"TK-2C-52-2",lat:33.8331891,lng:-84.6673868},
+{"name":"TK-2C-53-1",lat:33.83307186,lng:-84.66726985}
+	])
+}
+
+navigator.serviceWorker.register('/geocapture/geosw.js', { scope: '/geocapture/' })
+
+</script>
+</head>
+<body onload="start();">
+<!--<div id="capturer" />-->
+<div id="latlong">
+<h1>Location</h1>
+<pre id="latLongTxt"></pre>
+<button id="captureNowBn"></button><br>
+<button id="captureChangesBn"></button>
+
+</div>
+<div id="storage">
+<h1>Stored Events</h1>
+<button id="storeHistoryBn"></button><br>
+<button id="clearStorageBn"></button><br>
+<button id="exportStorageBn"></button><br>
+	<button id="showStorageBn"></button>
+<div id="storageDisplay" />
+	<pre id="storageTxt"></pre>
+</div>
+</div>
+<div id="reference">
+<h1>Reference Points</h1>
+<pre id="refPtTxt"></pre>
+<select id="refPointList"></select>
+<button id="setRefPtBn"></button>
+<button id="clearRefPtBn"></button>
+</div>
+<div id="notediv">
+<h1>Notes</h1>
+<pre id="noteTxt"></pre>
+<textarea id="textTA"> </textarea><br>
+<button id="textSetBn"></button>
+<button id="textClearBn"></button>
+</div>
+<div id="indicator">
+<div id="captureIndicator" ></div>
+<div id="watchIndicator" ></div>
+<div id="referenceIndicator" ></div>
+<div id="noteIndicator" ></div>
+</div>
+</body>
+</html>
