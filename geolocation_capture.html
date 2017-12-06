@@ -1,4 +1,4 @@
-<html manifest="geodemo.appcache">
+<html>
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
 <meta name="apple-mobile-web-app-capable"
       content="yes">
@@ -1100,7 +1100,7 @@ function start() {
 	])
 }
 
-navigator.serviceWorker.register('/geosw.js', { scope: '/' })
+navigator.serviceWorker.register('/geosw.js', { scope: '/geocapture/' })
 
 </script>
 </head>
